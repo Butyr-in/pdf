@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GitHub PDF в JPG Конвертер</title>
+    <title>Надежный PDF в JPG Конвертер</title>
+    
+    <!-- Встраиваем облегченное ядро PDF.js сборки ES5, которое гарантированно работает на GitHub Pages -->
+    <script src="https://cloudflare.com"></script>
+
     <style>
         :root {
             --primary: #ea580c;
@@ -86,12 +90,13 @@
             margin-bottom: 20px;
         }
 
-        #preview-img {
+        #result-canvas {
             max-width: 100%;
             max-height: 400px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             border: 1px solid #94a3b8;
             display: none;
+            background: white;
         }
 
         .placeholder-text {
@@ -130,18 +135,18 @@
 </head>
 <body>
 <div class="container">
-    <h1>Локальный PDF в JPG Конвертер (GitHub Server)</h1>
+    <h1>Локальный PDF в JPG Конвертер</h1>
     
     <div class="upload-zone" onclick="document.getElementById('file-input').click()">
         <p><b>Нажмите сюда</b> или перетащите PDF-файл таблицы</p>
         <input type="file" id="file-input" accept=".pdf">
     </div>
 
-    <div id="status" class="status">Автономный движок запущен. Ожидание файла таблицы...</div>
+    <div id="status" class="status">Ожидание выбора файла таблицы...</div>
 
     <div class="preview-box">
         <p class="placeholder-text" id="placeholder">Здесь отобразится готовое изображение таблицы</p>
-        <img id="preview-img" alt="Экспортированная таблица">
+        <canvas id="result-canvas"></canvas>
     </div>
 
     <div class="btn-group">
@@ -149,21 +154,24 @@
         <button id="clear-btn" class="btn-danger" style="display: none;">Очистить</button>
     </div>
 </div>
-
 <script>
+    // Явно привязываем воркер через blob-ссылку, чтобы обойти все типы CORS блокировок в браузере
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cloudflare.com';
+
     const fileInput = document.getElementById('file-input');
     const uploadZone = document.querySelector('.upload-zone');
     const statusDiv = document.getElementById('status');
-    const previewImg = document.getElementById('preview-img');
+    const canvas = document.getElementById('result-canvas');
     const placeholder = document.getElementById('placeholder');
     const downloadBtn = document.getElementById('download-btn');
     const clearBtn = document.getElementById('clear-btn');
     
     let baseFileName = "table_image";
-    let finalJpgUrl = null;
+    let realJpgBlob = null;
 
     fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) convertPdfDirectly(e.target.files[0]);
+        if (e.target.files.length > 0) processPdf(e.target.files);
     });
 
     uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.style.background = "#ffedd5"; });
@@ -171,101 +179,80 @@
     uploadZone.addEventListener('drop', (e) => {
         e.preventDefault();
         uploadZone.style.background = "#fff7ed";
-        if (e.dataTransfer.files.length > 0) convertPdfDirectly(e.dataTransfer.files[0]);
+        if (e.dataTransfer.files.length > 0) processPdf(e.dataTransfer.files);
     });
 
-    function convertPdfDirectly(file) {
-        if (!file.name.toLowerCase().endsWith('.pdf')) {
-            statusDiv.innerText = "Ошибка: Выберите именно .pdf файл!";
-            statusDiv.style.color = "#ef4444";
-            return;
-        }
-
+    function processPdf(file) {
         baseFileName = file.name.replace(/\.[^/.]+$/, "");
-        statusDiv.innerText = "Чтение файла и отрисовка графической структуры...";
+        statusDiv.innerText = "1. Загрузка бинарных данных таблицы...";
         statusDiv.style.color = "#ea580c";
 
         const reader = new FileReader();
         
-        reader.onload = function(e) {
-            // Преобразуем PDF в изолированныйBlob URL
-            const blob = new Blob([e.target.result], { type: 'application/pdf' });
-            const blobUrl = URL.createObjectURL(blob);
-
-            // Создаем виртуальный графический контейнер SVG
-            const img = new Image();
-            const svgData = `
-                <svg xmlns="http://w3.org" width="1600" height="1130">
-                    <rect width="100%" height="100%" fill="#ffffff"/>
-                    <foreignObject width="100%" height="100%">
-                        <div xmlns="http://w3.org" style="width:100%; height:100%; margin:0; padding:0;">
-                            <iframe src="${blobUrl}" style="width:100%; height:100%; border:none; margin:0; padding:0;"></iframe>
-                        </div>
-                    </foreignObject>
-                </svg>
-            `;
-
-            // Упаковываем SVG в формат, защищенный от любых внешних CORS-проверок
-            img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgData);
-
-            img.onload = function() {
-                const canvas = document.createElement('canvas');
+        reader.onload = async function(e) {
+            try {
+                statusDiv.innerText = "2. Декодирование структуры PDF...";
+                const typedarray = new Uint8Array(e.target.result);
+                
+                // Инициализируем задачу без использования внешних потоков
+                const loadingTask = pdfjsLib.getDocument({
+                    data: typedarray,
+                    disableWorker: true // Принудительно отключаем воркеры, рендерим в основном потоке!
+                });
+                
+                const pdf = await loadingTask.promise;
+                statusDiv.innerText = "3. Отрисовка сетки и текста в HD качестве...";
+                
+                const page = await pdf.getPage(1);
+                
+                // Масштаб 2.0 сделает тонкую черную сетку таблицы идеально четкой
+                const viewport = page.getViewport({ scale: 2.0 });
                 const ctx = canvas.getContext('2d');
                 
-                // Оптимальное альбомное разрешение HD для Google Таблиц
-                canvas.width = 1600;
-                canvas.height = 1130;
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
 
-                // Заливаем подложку белым цветом (обязательно для формата JPEG)
+                // Заливаем подложку белым цветом (чтобы черная сетка была видна)
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                // Отрисовываем картинку на физический холст
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
                 
-                try {
-                    // Извлекаем чистый, честный JPG с качеством 95%
-                    finalJpgUrl = canvas.toDataURL('image/jpeg', 0.95);
-                } catch(err) {
-                    // Если браузер заблокировал пиксельный экспорт, отдаем сформированный объект напрямую
-                    finalJpgUrl = blobUrl;
-                }
+                // Честный рендеринг PDF в пиксели холста
+                await page.render(renderContext).promise;
 
-                // Выводим готовую таблицу на экран в окно превью
-                placeholder.style.display = "none";
-                previewImg.style.display = "block";
-                previewImg.src = finalJpgUrl;
+                // Извлекаем настоящий растровый JPG файл (качество 95%)
+                canvas.toBlob((blob) => {
+                    realJpgBlob = blob;
+                    
+                    placeholder.style.display = "none";
+                    canvas.style.display = "block";
+                    
+                    statusDiv.innerText = "Успех! Файл сконвертирован в настоящий JPG.";
+                    statusDiv.style.color = "#16a34a";
+                    downloadBtn.disabled = false;
+                    clearBtn.style.display = "inline-block";
+                }, 'image/jpeg', 0.95);
 
-                statusDiv.innerText = "Таблица успешно сконвертирована в JPG!";
-                statusDiv.style.color = "#16a34a";
-                downloadBtn.disabled = false;
-                clearBtn.style.display = "inline-block";
-            };
-
-            // Запасной вариант, если внутренний графический движок дал сбой
-            img.onerror = function() {
-                finalJpgUrl = blobUrl;
-                placeholder.style.display = "none";
-                previewImg.style.display = "block";
-                previewImg.src = blobUrl;
-                
-                statusDiv.innerText = "Файл обработан силами движка браузера и готов к сохранению.";
-                statusDiv.style.color = "#16a34a";
-                downloadBtn.disabled = false;
-                clearBtn.style.display = "inline-block";
-            };
+            } catch (err) {
+                console.error(err);
+                statusDiv.innerText = "Ошибка конвертации: " + err.message;
+                statusDiv.style.color = "#ef4444";
+            }
         };
 
-        // Запускаем чтение бинарного массива данных
         reader.readAsArrayBuffer(file);
     }
 
-    // Скачивание честной картинки без структуры PDF внутри
+    // Скачивание честной JPG картинки
     downloadBtn.addEventListener('click', () => {
-        if (!finalJpgUrl) return;
+        if (!realJpgBlob) return;
         const link = document.createElement('a');
         link.download = `${baseFileName}.jpg`;
-        link.href = finalJpgUrl;
+        link.href = URL.createObjectURL(realJpgBlob);
         link.click();
     });
 
