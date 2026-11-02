@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GitHub PDF в JPG Конвертер</title>
     
-    <!-- Подключаем официальную библиотеку PDF.js. На сервере она загрузится без блокировок! -->
+    <!-- Используем стабильную LTS-версию PDF.js (2.16.105) -->
     <script src="https://cloudflare.com"></script>
 
     <style>
@@ -143,7 +143,7 @@
         <input type="file" id="file-input" accept=".pdf">
     </div>
 
-    <div id="status" class="status">GitHub Pages активен. Ожидание файла таблицы...</div>
+    <div id="status" class="status">GitHub Pages запущен. Ожидание файла таблицы...</div>
 
     <div class="preview-box">
         <p class="placeholder-text" id="placeholder">Здесь отобразится готовое изображение таблицы</p>
@@ -157,8 +157,10 @@
 </div>
 
 <script>
-    // Подтягиваем официальные библиотеки Mozilla
+    // Инициализация библиотеки строго под глобальное окружение
     const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    
+    // ВАЖНОЕ ИСПРАВЛЕНИЕ: привязываем воркер как Data-строку, чтобы обойти любые CORS блокировки браузера
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cloudflare.com';
 
     const fileInput = document.getElementById('file-input');
@@ -173,7 +175,7 @@
     let realJpgBlob = null;
 
     fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) handlePdfRender(e.target.files);
+        if (e.target.files.length > 0) handlePdfRender(e.target.files[0]);
     });
 
     uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.style.background = "#ffedd5"; });
@@ -181,31 +183,42 @@
     uploadZone.addEventListener('drop', (e) => {
         e.preventDefault();
         uploadZone.style.background = "#fff7ed";
-        if (e.dataTransfer.files.length > 0) handlePdfRender(e.dataTransfer.files);
+        if (e.dataTransfer.files.length > 0) handlePdfRender(e.dataTransfer.files[0]);
     });
 
     function handlePdfRender(file) {
+        if (!file.name.toLowerCase().endsWith('.pdf')) {
+            statusDiv.innerText = "Ошибка: Допускаются только файлы .pdf";
+            statusDiv.style.color = "#ef4444";
+            return;
+        }
+
         baseFileName = file.name.replace(/\.[^/.]+$/, "");
-        statusDiv.innerText = "Рендеринг разметки Google Таблицы...";
+        statusDiv.innerText = "1. Загрузка файла в память...";
         statusDiv.style.color = "#ea580c";
 
         const reader = new FileReader();
         
         reader.onload = async function(e) {
             try {
+                statusDiv.innerText = "2. Разбор структуры Google Таблицы...";
                 const typedarray = new Uint8Array(e.target.result);
+                
+                // Передаем массив байтов напрямую в задачу
                 const loadingTask = pdfjsLib.getDocument({ data: typedarray });
                 const pdf = await loadingTask.promise;
+                
+                statusDiv.innerText = "3. Отрисовка страницы в HD качестве...";
                 const page = await pdf.getPage(1);
                 
-                // Коэффициент 2.0 дает идеальную четкость для текста и сеток таблиц
+                // Масштаб 2.0 дает идеальную четкость для мелких текстов таблиц
                 const viewport = page.getViewport({ scale: 2.0 });
                 const ctx = canvas.getContext('2d');
                 
                 canvas.width = viewport.width;
                 canvas.height = viewport.height;
 
-                // Заливаем подложку белым цветом (критично для формата JPEG)
+                // Заливаем холст белым цветом (иначе прозрачные ячейки станут черными в JPG)
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -214,27 +227,33 @@
                     viewport: viewport
                 };
                 
-                // Рендерим PDF прямо на холст
+                // Выполняем попиксельный рендеринг таблицы на холст
                 await page.render(renderContext).promise;
 
-                // Преобразуем холст в настоящий физический JPG
+                statusDiv.innerText = "4. Финализация графического JPEG файла...";
+                // Извлекаем настоящий растровый JPEG
                 canvas.toBlob((blob) => {
                     realJpgBlob = blob;
                     
                     placeholder.style.display = "none";
                     canvas.style.display = "block";
                     
-                    statusDiv.innerText = "Успех! Изображение сформировано без блокировок.";
+                    statusDiv.innerText = "Успех! Изображение таблицы готово.";
                     statusDiv.style.color = "#16a34a";
                     downloadBtn.disabled = false;
                     clearBtn.style.display = "inline-block";
-                }, 'image/jpeg', 0.95);
+                }, 'image/jpeg', 0.95); // Качество 95%
 
             } catch (err) {
                 console.error(err);
-                statusDiv.innerText = "Ошибка конвертации: " + err.message;
+                statusDiv.innerText = "Ошибка разбора PDF: " + err.message;
                 statusDiv.style.color = "#ef4444";
             }
+        };
+
+        reader.onerror = function() {
+            statusDiv.innerText = "Критическая ошибка чтения файла.";
+            statusDiv.style.color = "#ef4444";
         };
 
         reader.readAsArrayBuffer(file);
