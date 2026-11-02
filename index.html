@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub PDF в JPG Конвертер</title>
+    
+    <!-- Подключаем официальную библиотеку PDF.js. На сервере она загрузится без блокировок! -->
+    <script src="https://cloudflare.com"></script>
+
+    <style>
+        :root {
+            --primary: #ea580c;
+            --primary-hover: #c2410c;
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --text: #0f172a;
+            --border: #cbd5e1;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background: var(--surface);
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+            border: 1px solid #e2e8f0;
+        }
+
+        h1 {
+            font-size: 22px;
+            margin-top: 0;
+            text-align: center;
+            color: var(--primary);
+            margin-bottom: 20px;
+        }
+
+        .upload-zone {
+            border: 2px dashed var(--primary);
+            padding: 35px 20px;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-bottom: 20px;
+            background: #fff7ed;
+        }
+
+        .upload-zone:hover {
+            background: #ffedd5;
+        }
+
+        .upload-zone input {
+            display: none;
+        }
+
+        .status {
+            text-align: center;
+            font-weight: 500;
+            margin-bottom: 20px;
+            color: #475569;
+            padding: 12px;
+            border-radius: 6px;
+            background-color: #f1f5f9;
+            border: 1px solid #e2e8f0;
+        }
+
+        .preview-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 250px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.02);
+        }
+
+        #result-canvas {
+            max-width: 100%;
+            max-height: 400px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            border: 1px solid #94a3b8;
+            display: none;
+            background: white;
+        }
+
+        .placeholder-text {
+            color: #94a3b8;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 28px;
+            font-size: 15px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover { background-color: var(--primary-hover); }
+        button:disabled {
+            background-color: #e2e8f0;
+            color: #94a3b8;
+            cursor: not-allowed;
+        }
+        .btn-danger { background-color: #ef4444; }
+        .btn-danger:hover { background-color: #dc2626; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Локальный PDF в JPG Конвертер (GitHub Server)</h1>
+    
+    <div class="upload-zone" onclick="document.getElementById('file-input').click()">
+        <p><b>Нажмите сюда</b> или перетащите PDF-файл таблицы</p>
+        <input type="file" id="file-input" accept=".pdf">
+    </div>
+
+    <div id="status" class="status">GitHub Pages активен. Ожидание файла таблицы...</div>
+
+    <div class="preview-box">
+        <p class="placeholder-text" id="placeholder">Здесь отобразится готовое изображение таблицы</p>
+        <canvas id="result-canvas"></canvas>
+    </div>
+
+    <div class="btn-group">
+        <button id="download-btn" disabled>Скачать JPG картинку</button>
+        <button id="clear-btn" class="btn-danger" style="display: none;">Очистить</button>
+    </div>
+</div>
+
+<script>
+    // Подтягиваем официальные библиотеки Mozilla
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cloudflare.com';
+
+    const fileInput = document.getElementById('file-input');
+    const uploadZone = document.querySelector('.upload-zone');
+    const statusDiv = document.getElementById('status');
+    const canvas = document.getElementById('result-canvas');
+    const placeholder = document.getElementById('placeholder');
+    const downloadBtn = document.getElementById('download-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    
+    let baseFileName = "table_image";
+    let realJpgBlob = null;
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) handlePdfRender(e.target.files);
+    });
+
+    uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.style.background = "#ffedd5"; });
+    uploadZone.addEventListener('dragleave', () => { uploadZone.style.background = "#fff7ed"; });
+    uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadZone.style.background = "#fff7ed";
+        if (e.dataTransfer.files.length > 0) handlePdfRender(e.dataTransfer.files);
+    });
+
+    function handlePdfRender(file) {
+        baseFileName = file.name.replace(/\.[^/.]+$/, "");
+        statusDiv.innerText = "Рендеринг разметки Google Таблицы...";
+        statusDiv.style.color = "#ea580c";
+
+        const reader = new FileReader();
+        
+        reader.onload = async function(e) {
+            try {
+                const typedarray = new Uint8Array(e.target.result);
+                const loadingTask = pdfjsLib.getDocument({ data: typedarray });
+                const pdf = await loadingTask.promise;
+                const page = await pdf.getPage(1);
+                
+                // Коэффициент 2.0 дает идеальную четкость для текста и сеток таблиц
+                const viewport = page.getViewport({ scale: 2.0 });
+                const ctx = canvas.getContext('2d');
+                
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+
+                // Заливаем подложку белым цветом (критично для формата JPEG)
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
+                
+                // Рендерим PDF прямо на холст
+                await page.render(renderContext).promise;
+
+                // Преобразуем холст в настоящий физический JPG
+                canvas.toBlob((blob) => {
+                    realJpgBlob = blob;
+                    
+                    placeholder.style.display = "none";
+                    canvas.style.display = "block";
+                    
+                    statusDiv.innerText = "Успех! Изображение сформировано без блокировок.";
+                    statusDiv.style.color = "#16a34a";
+                    downloadBtn.disabled = false;
+                    clearBtn.style.display = "inline-block";
+                }, 'image/jpeg', 0.95);
+
+            } catch (err) {
+                console.error(err);
+                statusDiv.innerText = "Ошибка конвертации: " + err.message;
+                statusDiv.style.color = "#ef4444";
+            }
+        };
+
+        reader.readAsArrayBuffer(file);
+    }
+
+    downloadBtn.addEventListener('click', () => {
+        if (!realJpgBlob) return;
+        const link = document.createElement('a');
+        link.download = `${baseFileName}.jpg`;
+        link.href = URL.createObjectURL(realJpgBlob);
+        link.click();
+    });
+
+    clearBtn.addEventListener('click', () => {
+        location.reload();
+    });
+</script>
+</body>
+</html>
