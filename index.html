@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Локальный PDF в JPG Конвертер</title>
     
-    <!-- Используем официальную ES5-сборку библиотеки, которая не требует воркеров -->
+    <!-- Используем стабильную LTS-версию библиотеки PDF.js от Mozilla -->
     <script src="https://cloudflare.com"></script>
 
     <style>
@@ -148,7 +148,7 @@
 </head>
 <body>
 <div class="container">
-    <div class="version-badge">v5.2.0-LTS</div>
+    <div class="version-badge">v5.3.0-LTS</div>
     <h1>Локальный PDF в JPG Конвертер</h1>
     
     <div class="upload-zone" onclick="document.getElementById('file-input').click()">
@@ -156,7 +156,7 @@
         <input type="file" id="file-input" accept=".pdf">
     </div>
 
-    <div id="status" class="status">Ожидание выбора файла таблицы...</div>
+    <div id="status" class="status">Инициализация системного окружения...</div>
 
     <div class="preview-box">
         <p class="placeholder-text" id="placeholder">Здесь отобразится готовое изображение таблицы</p>
@@ -170,117 +170,113 @@
 </div>
 
 <script>
-    // Инициализируем библиотеку без использования внешних воркеров
-    const pdfjsLib = window['pdfjs-dist/build/pdf'];
-    // Вместо ссылки скачивания, собираем инлайн-воркер из внутренней текстовой переменной
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cloudflare.com';
-
-    const fileInput = document.getElementById('file-input');
-    const uploadZone = document.querySelector('.upload-zone');
-    const statusDiv = document.getElementById('status');
-    const canvas = document.getElementById('result-canvas');
-    const placeholder = document.getElementById('placeholder');
-    const downloadBtn = document.getElementById('download-btn');
-    const clearBtn = document.getElementById('clear-btn');
-    
-    let baseFileName = "table_image";
-    let realJpgBlob = null;
-
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) processFile(e.target.files);
-    });
-
-    uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.style.background = "#ffedd5"; });
-    uploadZone.addEventListener('dragleave', () => { uploadZone.style.background = "#fff7ed"; });
-    uploadZone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        uploadZone.style.background = "#fff7ed";
-        if (e.dataTransfer.files.length > 0) processFile(e.dataTransfer.files);
-    });
-
-    function processFile(file) {
-        if (!file.name.toLowerCase().endsWith('.pdf')) {
-            statusDiv.innerText = "Ошибка: Допускаются только файлы .pdf";
-            statusDiv.style.color = "#ef4444";
+    // Оборачиваем логику в window.onload, чтобы исключить запуск до полной готовности CDN библиотеки
+    window.onload = function() {
+        const pdfjsLib = window['pdfjs-dist/build/pdf'] || window.pdfjsLib;
+        
+        if (!pdfjsLib) {
+            document.getElementById('status').innerText = "Критическая ошибка: библиотека рендеринга заблокирована сервером.";
+            document.getElementById('status').style.color = "#ef4444";
             return;
         }
 
-        baseFileName = file.name.replace(/\.[^/.]+$/, "");
-        statusDiv.innerText = "1. Чтение бинарного архива ячеек...";
-        statusDiv.style.color = "#ea580c";
-
-        const reader = new FileReader();
+        // Привязываем путь к воркеру на сервере
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cloudflare.com';
         
-        reader.onload = async function(e) {
-            try {
-                statusDiv.innerText = "2. Построение сетки таблицы...";
-                const typedarray = new Uint8Array(e.target.result);
-                
-                // Передаем массив байтов и принудительно отключаем фоновые потоки, чтобы обойти блокировки
-                const loadingTask = pdfjsLib.getDocument({ 
-                    data: typedarray,
-                    disableWorker: true 
-                });
-                
-                const pdf = await loadingTask.promise;
-                statusDiv.innerText = "3. Отрисовка черных линий и шрифтов...";
-                
-                const page = await pdf.getPage(1);
-                
-                // Масштаб 2.0 превратит мелкие линии Google Таблиц в четкую графику
-                const viewport = page.getViewport({ scale: 2.0 });
-                const ctx = canvas.getContext('2d');
-                
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
+        const fileInput = document.getElementById('file-input');
+        const uploadZone = document.querySelector('.upload-zone');
+        const statusDiv = document.getElementById('status');
+        const canvas = document.getElementById('result-canvas');
+        const placeholder = document.getElementById('placeholder');
+        const downloadBtn = document.getElementById('download-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        
+        let baseFileName = "table_image";
+        let realJpgBlob = null;
 
-                // Создаем плотную белую подложку (критично для сохранения сетки в JPG)
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
+        statusDiv.innerText = "Ядро успешно инициализировано. Ожидание файла таблицы...";
 
-                const renderContext = {
-                    canvasContext: ctx,
-                    viewport: viewport
-                };
-                
-                // Отрисовываем PDF-страницу прямо в пиксели Canvas
-                await page.render(renderContext).promise;
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) processFile(e.target.files[0]);
+        });
 
-                // Переводим пиксели холста в честный растровый файл JPEG
-                canvas.toBlob((blob) => {
-                    realJpgBlob = blob;
-                    
-                    placeholder.style.display = "none";
-                    canvas.style.display = "block";
-                    
-                    statusDiv.innerText = "Успех! Картинка таблицы готова к сохранению.";
-                    statusDiv.style.color = "#16a34a";
-                    downloadBtn.disabled = false;
-                    clearBtn.style.display = "inline-block";
-                }, 'image/jpeg', 0.95);
+        uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.style.background = "#ffedd5"; });
+        uploadZone.addEventListener('dragleave', () => { uploadZone.style.background = "#fff7ed"; });
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.style.background = "#fff7ed";
+            if (e.dataTransfer.files.length > 0) processFile(e.dataTransfer.files[0]);
+        });
 
-            } catch (err) {
-                console.error(err);
-                statusDiv.innerText = "Ошибка разбора таблицы: " + err.message;
+        function processFile(file) {
+            if (!file.name.toLowerCase().endsWith('.pdf')) {
+                statusDiv.innerText = "Ошибка: Допускаются только файлы с расширением .pdf";
                 statusDiv.style.color = "#ef4444";
+                return;
             }
-        };
 
-        reader.readAsArrayBuffer(file);
-    }
+            baseFileName = file.name.replace(/\.[^/.]+$/, "");
+            statusDiv.innerText = "1. Чтение двоичного массива ячеек...";
+            statusDiv.style.color = "#ea580c";
 
-    // Скачивание растрового JPEG, который легко откроет Windows
-    downloadBtn.addEventListener('click', () => {
-        if (!realJpgBlob) return;
-        const link = document.createElement('a');
-        link.download = `${baseFileName}.jpg`;
-        link.href = URL.createObjectURL(realJpgBlob);
-        link.click();
-    });
+            const reader = new FileReader();
+            
+            reader.onload = async function(e) {
+                try {
+                    statusDiv.innerText = "2. Построение структуры сетки таблицы...";
+                    const typedarray = new Uint8Array(e.target.result);
+                    
+                    // Выполняем побайтовую обработку без выделения фоновых потоков воркера
+                    const loadingTask = pdfjsLib.getDocument({ 
+                        data: typedarray,
+                        disableWorker: true 
+                    });
+                    
+                    const pdf = await loadingTask.promise;
+                    statusDiv.innerText = "3. Отрисовка черных линий и шрифтов...";
+                    
+                    const page = await pdf.getPage(1);
+                    
+                    // Масштаб 2.0 превратит мелкие элементы в четкую векторную графику
+                    const viewport = page.getViewport({ scale: 2.0 });
+                    const ctx = canvas.getContext('2d');
+                    
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
 
-    clearBtn.addEventListener('click', () => {
-        location.reload();
-    });
-</script>
-</body>
-</html>
+                    // Создаем плотную белую подложку (критично для сохранения видимости сетки ячеек в JPG)
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    const renderContext = {
+                        canvasContext: ctx,
+                        viewport: viewport
+                    };
+                    
+                    // Рендерим PDF-данные непосредственно на холст
+                    await page.render(renderContext).promise;
+
+                    statusDiv.innerText = "4. Финализация графического JPEG файла...";
+                    // Экспортируем пиксели холста в настоящий растровый файл JPEG
+                    canvas.toBlob((blob) => {
+                        realJpgBlob = blob;
+                        
+                        placeholder.style.display = "none";
+                        canvas.style.display = "block";
+                        
+                        statusDiv.innerText = "Успех! Изображение таблицы сформировано.";
+                        statusDiv.style.color = "#16a34a";
+                        downloadBtn.disabled = false;
+                        clearBtn.style.display = "inline-block";
+                    }, 'image/jpeg', 0.95);
+
+                } catch (err) {
+                    console.error(err);
+                    statusDiv.innerText = "Ошибка разбора таблицы: " + err.message;
+                    statusDiv.style.color = "#ef4444";
+                }
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
